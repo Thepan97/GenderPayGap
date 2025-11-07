@@ -39,7 +39,7 @@ app.layout = html.Div(
     children=[
         # html.H2("Change in Gender Pay Gap Over Time"),
         html.H2(
-            "Change in Gender Pay Gap Over Time",
+            "Change in Gender Pay Gap (GPG) Across Organisations",
             style={
                 "background-color": "#26375C",
                 "color": "white",
