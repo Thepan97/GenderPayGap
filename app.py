@@ -18,23 +18,17 @@ GPG_COL = "GenderPayGap_HourlyPay_Mean_Percent"
 df[GPG_COL] = pd.to_numeric(df[GPG_COL], errors="coerce")
 df = df.dropna(subset=[GPG_COL])
 
-# Earliest and latest years
-year_min = int(df["YearNum"].min())
-year_max = int(df["YearNum"].max())  # fixed later year
+# Available years
+years_available = sorted(df["YearNum"].dropna().unique().astype(int))
+year_min, year_max = int(min(years_available)), int(max(years_available))
 
-# Marks for the earlier-year slider (exclude latest year)
-earlier_year_marks = {
-    int(y): str(int(y))
-    for y in sorted(df["YearNum"].unique())
-    if int(y) < year_max
-}
+# Slider marks
+year_marks = {int(y): str(int(y)) for y in years_available}
 
 # Compute fixed x-axis limits across all years
 x_min = df[GPG_COL].min()
 x_max = df[GPG_COL].max()
-
-# Add a small margin (so points aren't too close to edges)
-x_padding = (x_max - x_min) * 0.05
+x_padding = (x_max - x_min) * 0.05 if pd.notnull(x_max) and pd.notnull(x_min) else 1
 x_range = [x_min - x_padding, x_max + x_padding]
 
 # -----------------------------
@@ -67,25 +61,25 @@ app.layout = html.Div(
             },
             children=[
                 html.Div(
-                    style={"min-width": "300px", "flex": "1 1 300px"},
+                    style={"min-width": "380px", "flex": "1 1 380px"},
                     children=[
                         html.Label(
-                            f"Select earlier year (later year fixed at {year_max}):",
+                            "Select comparison years (left = earlier, right = later):",
                             style={"margin-bottom": "8px", "display": "block"},
                         ),
-                        dcc.Slider(
-                            id="earlier-year",
-                            min=min(earlier_year_marks.keys()),
-                            max=max(earlier_year_marks.keys()),
+                        dcc.RangeSlider(
+                            id="year-range",
+                            min=year_min,
+                            max=year_max,
                             step=1,
-                            value=min(earlier_year_marks.keys()),
-                            marks=earlier_year_marks,
-                            included=False,
+                            value=[year_min, year_max],
+                            marks=year_marks,
+                            allowCross=False,
                         ),
                     ],
                 ),
                 html.Div(
-                    style={"min-width": "220px"},
+                    style={"min-width": "260px"},
                     children=[
                         html.Label(
                             "Filter organisations by direction of change:",
@@ -95,14 +89,8 @@ app.layout = html.Div(
                             id="direction-filter",
                             options=[
                                 {"label": "All organisations", "value": "all"},
-                                {
-                                    "label": "Moving in favour of men",
-                                    "value": "men",
-                                },
-                                {
-                                    "label": "Moving in favour of women",
-                                    "value": "women",
-                                },
+                                {"label": "Moving in favour of men", "value": "men"},
+                                {"label": "Moving in favour of women", "value": "women"},
                             ],
                             value="all",
                             clearable=False,
@@ -141,19 +129,19 @@ app.layout = html.Div(
     Output("gpg-dumbbell", "figure"),
     Output("legend-text", "children"),
     Output("org-count-card", "children"),
-    Input("earlier-year", "value"),
+    Input("year-range", "value"),
     Input("direction-filter", "value"),
 )
-def update_dumbbell(earlier_year, direction_filter):
-    start_year = int(earlier_year)
-    end_year = year_max  # fixed later year
+def update_dumbbell(year_range, direction_filter):
+    start_year, end_year = map(int, year_range or [year_min, year_max])
 
+    # Guard: need two different years
     if start_year >= end_year:
         fig = go.Figure()
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white")
         return (
             fig,
-            f"Please select a year earlier than {end_year}.",
+            "Please pick two different years (the right handle must be later than the left).",
             "Number of organisations shown: 0",
         )
 
@@ -181,7 +169,7 @@ def update_dumbbell(earlier_year, direction_filter):
             "Number of organisations shown: 0",
         )
 
-    # Keep all orgs that have data in the later year
+    # Keep all orgs that have data in the later (right) year
     pivot = pivot.dropna(subset=[end_year])
     if pivot.empty:
         fig = go.Figure()
@@ -192,7 +180,7 @@ def update_dumbbell(earlier_year, direction_filter):
             "Number of organisations shown: 0",
         )
 
-    # Organisations with both years (for direction + dumbbells)
+    # Orgs with both years (for direction + dumbbells)
     if start_year in pivot.columns:
         pivot_with_both = pivot[pivot[start_year].notna()].copy()
     else:
@@ -200,18 +188,15 @@ def update_dumbbell(earlier_year, direction_filter):
 
     # Classify direction of movement where both years exist
     if not pivot_with_both.empty:
-        pivot_with_both["change"] = (
-            pivot_with_both[end_year] - pivot_with_both[start_year]
-        )
+        pivot_with_both["change"] = pivot_with_both[end_year] - pivot_with_both[start_year]
         pivot_with_both["move_dir"] = np.where(
-            pivot_with_both["change"] > 0,
-            "men",
-            np.where(pivot_with_both["change"] < 0, "women", "none"),
+            pivot_with_both["change"] > 0, "men",
+            np.where(pivot_with_both["change"] < 0, "women", "none")
         )
     else:
         pivot_with_both["move_dir"] = []
 
-    # Merge movement direction back to full pivot (orgs without start_year stay NaN)
+    # Merge movement direction back to full pivot (orgs without start year remain NaN)
     if "move_dir" in pivot_with_both.columns:
         pivot = pivot.merge(
             pivot_with_both[["Organisation", "move_dir"]],
@@ -229,6 +214,7 @@ def update_dumbbell(earlier_year, direction_filter):
     else:
         plot_pivot = pivot.copy()
 
+    # If nothing to show for this filter
     if plot_pivot.empty:
         fig = go.Figure()
         fig.update_layout(
@@ -239,34 +225,30 @@ def update_dumbbell(earlier_year, direction_filter):
             annotations=[
                 dict(
                     text="No organisations match the selected criteria.",
-                    x=0.5,
-                    y=0.5,
-                    xref="paper",
-                    yref="paper",
-                    showarrow=False,
-                    font=dict(size=14),
+                    x=0.5, y=0.5, xref="paper", yref="paper",
+                    showarrow=False, font=dict(size=14),
                 )
             ],
         )
         msg = (
-            f"No organisations have data for {start_year} and {end_year} that "
-            f"are '{'moving in favour of men' if direction_filter=='men' else 'moving in favour of women'}'."
+            f"No organisations have data for {start_year} and {end_year} that are "
+            f"{'moving in favour of men' if direction_filter=='men' else 'moving in favour of women'}."
             if direction_filter in ["men", "women"]
             else "No organisations available for the selected filters."
         )
         return fig, msg, "Number of organisations shown: 0"
 
-    # Sort by latest year
+    # Sort by the later year value
     plot_pivot = plot_pivot.sort_values(end_year)
 
-    # y positions for all orgs in the filtered set
+    # y positions
     plot_pivot["y_pos"] = list(range(len(plot_pivot)))
     y_vals = plot_pivot["y_pos"]
     org_labels = plot_pivot["Organisation"]
 
     fig = go.Figure()
 
-    # Dumbbell lines: only for orgs in this view that have both years
+    # Dumbbell lines: only for orgs that have both years
     if start_year in plot_pivot.columns:
         lines_df = plot_pivot[plot_pivot[start_year].notna()].copy()
         for _, row in lines_df.iterrows():
@@ -281,7 +263,7 @@ def update_dumbbell(earlier_year, direction_filter):
                 )
             )
 
-    # Earlier year markers (turquoise): only where start_year exists
+    # Earlier (left) year markers (turquoise)
     if start_year in plot_pivot.columns:
         earlier_points = plot_pivot[plot_pivot[start_year].notna()]
         if not earlier_points.empty:
@@ -293,12 +275,12 @@ def update_dumbbell(earlier_year, direction_filter):
                     marker=dict(color="#00B9C4", size=10),
                     name=f"GPG {start_year}",
                     hovertemplate="<b>%{text}</b><br>"
-                    f"{start_year} GPG: %{{x:.2f}}%<extra></extra>",
+                                  f"{start_year} GPG: %{{x:.2f}}%<extra></extra>",
                     text=earlier_points["Organisation"],
                 )
             )
 
-    # Later year markers (dark blue): for all orgs in this view
+    # Later (right) year markers (dark blue)
     fig.add_trace(
         go.Scatter(
             x=plot_pivot[end_year],
@@ -307,12 +289,12 @@ def update_dumbbell(earlier_year, direction_filter):
             marker=dict(color="#002B5C", size=10),
             name=f"GPG {end_year}",
             hovertemplate="<b>%{text}</b><br>"
-            f"{end_year} GPG: %{{x:.2f}}%<extra></extra>",
+                          f"{end_year} GPG: %{{x:.2f}}%<extra></extra>",
             text=org_labels,
         )
     )
 
-    # Y axis – labels for each organisation + horizontal gridlines
+    # Y axis – labels + horizontal gridlines
     fig.update_yaxes(
         tickmode="array",
         tickvals=list(y_vals),
@@ -325,7 +307,7 @@ def update_dumbbell(earlier_year, direction_filter):
         zeroline=False,
     )
 
-    # X axis – fixed range across all updates + vertical gridlines
+    # X axis – fixed range + vertical gridlines
     fig.update_xaxes(
         range=x_range,
         zeroline=True,
@@ -336,10 +318,10 @@ def update_dumbbell(earlier_year, direction_filter):
         gridcolor="rgba(220,220,220,0.3)",
     )
 
-    # Dynamic chart height: more organisations = taller figure
+    # Dynamic height
     n_orgs = len(plot_pivot)
-    base_height = 250   # space for title, slider, legend, etc.
-    row_height = 28     # pixels per organisation row
+    base_height = 250
+    row_height = 28
     fig_height = base_height + row_height * n_orgs
 
     fig.update_layout(
@@ -351,25 +333,19 @@ def update_dumbbell(earlier_year, direction_filter):
         height=fig_height,
     )
 
-    # Direction labels (in top margin)
+    # Direction labels
     fig.add_annotation(
         text="←IN FAVOUR OF WOMEN",
-        xref="paper",
-        yref="paper",
-        x=0.0,
-        y=1.0,
-        yshift=30,
+        xref="paper", yref="paper",
+        x=0.0, y=1.0, yshift=30,
         showarrow=False,
         font=dict(size=12, color="#444", family="Segoe UI, sans-serif"),
         align="left",
     )
     fig.add_annotation(
         text="IN FAVOUR OF MEN→",
-        xref="paper",
-        yref="paper",
-        x=1.0,
-        y=1.0,
-        yshift=30,
+        xref="paper", yref="paper",
+        x=1.0, y=1.0, yshift=30,
         showarrow=False,
         font=dict(size=12, color="#444", family="Segoe UI, sans-serif"),
         align="right",
@@ -378,16 +354,16 @@ def update_dumbbell(earlier_year, direction_filter):
     # Legend text
     direction_msg = {
         "all": "all organisations with data in the later year",
-        "men": "organisations where the gender pay gap has moved further in favour of men",
-        "women": "organisations where the gender pay gap has moved further in favour of women",
+        "men": "organisations where the gender pay gap moved further in favour of men",
+        "women": "organisations where the gender pay gap moved further in favour of women",
     }[direction_filter]
 
     legend_text = (
-        f"Dark blue represents {end_year} (later year, fixed). "
-        f"Turquoise represents {start_year} where data is available. "
+        f"Dark blue represents {end_year} (later year) and "
+        f"turquoise represents {start_year} (earlier year). "
         f"The current view shows {direction_msg}. "
-        f"Organisations without {start_year} data only show the dark-blue marker and "
-        f"are not included in the 'moving in favour' filters."
+        f"Organisations without {start_year} data show only the dark-blue marker "
+        f"and are excluded from the movement filters."
     )
 
     org_count_text = f"Number of organisations shown: {n_orgs}"
